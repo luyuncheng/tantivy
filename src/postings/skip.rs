@@ -1,4 +1,4 @@
-use crate::common::BinarySerializable;
+use crate::common::{BinarySerializable, VInt};
 use crate::directory::ReadOnlySource;
 use crate::postings::compression::{compressed_block_size, COMPRESSION_BLOCK_SIZE};
 use crate::schema::IndexRecordOption;
@@ -38,6 +38,11 @@ impl SkipSerializer {
         tf_sum
             .serialize(&mut self.buffer)
             .expect("Should never fail");
+    }
+
+    pub fn write_blockwand_max(&mut self, fieldnorm_id: u8, term_freq: u32) {
+        self.buffer.push(fieldnorm_id);
+        VInt(term_freq as u64).serialize_into_vec(&mut self.buffer);
     }
 
     pub fn data(&self) -> &[u8] {
@@ -138,12 +143,17 @@ impl SkipReader {
                     tf_num_bits,
                     tf_sum: 0,
                 };
-                self.owned_read.advance(2);
+                let block_wand_fieldnormid = self.owned_read.get(2);
+                self.owned_read.advance(3);
+                let block_wand_term_freq = VInt::deserialize_u64(&mut self.owned_read).unwrap();
             }
             IndexRecordOption::WithFreqsAndPositions => {
                 let tf_num_bits = self.owned_read.get(1);
                 self.owned_read.advance(2);
                 let tf_sum = u32::deserialize(&mut self.owned_read).expect("Failed reading tf_sum");
+                let block_wand_fieldnorm_id = self.owned_read.get(0);
+                self.owned_read.advance(1);
+                let block_wand_term_freq = VInt::deserialize_u64(&mut self.owned_read).unwrap();
                 self.block_info = BlockInfo::BitPacked {
                     doc_num_bits,
                     tf_num_bits,
@@ -209,8 +219,10 @@ mod tests {
             let mut skip_serializer = SkipSerializer::new();
             skip_serializer.write_doc(1u32, 2u8);
             skip_serializer.write_term_freq(3u8);
+            skip_serializer.write_blockwand_max(13u8, 3u32);
             skip_serializer.write_doc(5u32, 5u8);
             skip_serializer.write_term_freq(2u8);
+            skip_serializer.write_blockwand_max(8u8, 2u32);
             skip_serializer.data().to_owned()
         };
         let doc_freq = 3u32 + (COMPRESSION_BLOCK_SIZE * 2) as u32;
